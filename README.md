@@ -4,7 +4,8 @@ This plugin provides a framework and interface for a synchronization mechanism t
 scale and massive concurrency, it becomes increasingly difficult to synchronize operations outside the context of a single computational space (server/process/container).  This plugin aims to make that
 easier by providing a simple service to facilitate this, as well as defining an interface for adding low level providers.
 
-In the current release, only a provider for [redis][redis] currently exists, which depends on the [grails-redis][grails-redis] plugin. Any other providers are welcome contributions.
+This plugin supports both utilizing the grails-redis plugin if it is available OR GORM by creating a hibernate `distributed_lock` table. GORM Locking over MySQL or other hibernate compatible database backing is very efficient and can often be used to reduce dependency overhead.
+
 
 Release Notes
 -------------
@@ -12,21 +13,21 @@ Release Notes
 * __0.2:__ Adding withLock() variations for convenience to LockService impl
 * __0.2.1:__ Minor bug fixes in configuration
 * __0.2.2:__ Minor fix for domain class identification
+* 7.0.0: Grails 7 Support
 
-Things to be Done
------------------
-* Add Provider for [memcached][memcached]
-* Add Provider for [gorm][gorm]
-* Add Provider for [riak][riak]
 
 Installation
 ------------
-Add the plugin to your __BuildConfig.groovy__:
-```java
-plugins {
-	compile ":distributed-lock:0.1.0"
+Add the plugin to your `build.gradle`:
+
+```gradle
+dependencies {
+  implementation 'cloud.wondrify:distributed-lock:7.0.0'
+  //optionally add gorm dependencies if using the gorm provider  
+  implementation 'cloud.wondrify:distributed-lock-gorm:7.0.0'
 }
 ```
+
 Configuration
 -------------
 First thing is to configure your redis store.  Add sample config to your __Config.groovy__:
@@ -71,14 +72,23 @@ Configuration options:
 
 Usage
 -----
-The plugin provides a single non transactional service that handles all lock negotiation that you can inject in any of your services
+The plugin provides a single non transactional service that handles all lock negotiation that you can inject in any of your services.
 
 ```java
 class MyService {
 	def lockService
 	
 	def someMethod() {
-		def lockKey = lockService.acquireLock('/lock/a/shared/fs')
+    def lockKey
+    try {
+		  lockKey = lockService.acquireLock('/lock/a/shared/fs')
+      //do your lock stuff here
+    } finally {
+      if(lockKey) {
+        lockService.releaseLock('/lock/a/shared/fs',[lock:lockKey])
+      }
+    }
+    
 	}
 }
 ```
@@ -154,9 +164,3 @@ Extending/Contributing
 ----------------------
 To add additional providers is simple.  Simply extend the abstract __com.bertram.lock.LockProvider__ class and implement its abstract methods.  Once the new provider is implemented, it must be added to the __LockServiceConfigurer__ configuration method.  Please submit contributions via pull request.
 	
-[redis]: http://redis.io
-[grails-redis]: http://grails.org/plugin/redis
-[riak]: http://basho.com/riak
-[memcached]: http://memcached.org/
-[gorm]: http://grails.org/doc/latest/guide/GORM.html
-[executor]: http://grails.org/plugin/executor
