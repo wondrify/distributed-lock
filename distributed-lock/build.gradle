@@ -1,131 +1,52 @@
-buildscript {
-    ext {
-      grailsVersion = project.grailsVersion
-    }
-    repositories {
-        mavenLocal()
-        mavenCentral()
-        maven { url "https://repo.grails.org/grails/core" }
-    }
-    dependencies {
-        classpath "org.grails:grails-gradle-plugin:$grailsVersion"
+apply plugin: 'groovy'
+apply plugin: 'java-library'
+apply plugin:"org.apache.grails.gradle.grails-plugin"
 
+group = 'cloud.wondrify'
+
+ext {
+                   pomDescription = """This plugin provides a framework and interface for a synchronization mechanism distributed to multiple server instances.  In today's world of horizontal computational
+scale and massive concurrency, it becomes increasingly difficult to synchronize operations outside the context of a single computational space (server/process).  This plugin aims to make that
+easier by providing a simple service to facilitate this, as well as defining an interface for adding low level providers.
+"""
+}
+
+configurations {
+    provided
+    doc.extendsFrom(runtime)
+}
+
+sourceSets {
+    main {
+        compileClasspath += configurations.provided
+        groovy.srcDirs += ['src/main/java']
+        java.srcDirs = []
     }
 }
 
-group "com.bertramlabs.plugins"
 
-apply plugin:"eclipse"
-apply plugin:"idea"
-apply plugin:"java-library"
-apply plugin:"org.grails.grails-plugin"
-apply plugin:"maven-publish"
-
-ext.isReleaseVersion = !version.endsWith("SNAPSHOT")
-
-
-repositories {
-    mavenLocal()
-    mavenCentral()
-    maven { url "https://repo.grails.org/grails/core" }
-}
-
-java {
-    withSourcesJar()
-    withJavadocJar()
-}
 
 dependencies {
     implementation 'org.springframework.boot:spring-boot-starter-logging'
     implementation "org.springframework.boot:spring-boot-starter-actuator"
     implementation "org.springframework.boot:spring-boot-autoconfigure"
     implementation "org.springframework.boot:spring-boot-starter-tomcat"
-    implementation "org.grails:grails-web-boot"
-    implementation "org.grails:grails-dependencies"
-    implementation 'javax.servlet:javax.servlet-api:3.1.0'
+    implementation "org.apache.grails:grails-core"
+    implementation "org.apache.grails:grails-web-boot"
+    implementation platform("org.apache.grails:grails-bom:$grailsVersion")
+    // implementation 'javax.servlet:javax.servlet-api:3.1.0'
+    implementation "com.h2database:h2"
 
-    console "org.grails:grails-console"
-
-    compileOnly 'org.grails.plugins:grails-redis:5.0.0-SNAPSHOT'
-    testImplementation 'org.grails.plugins:grails-redis:5.0.0-SNAPSHOT'
-    testImplementation "org.grails:grails-gorm-testing-support"
+    api "org.apache.grails:grails-async:7.0.0"
+    compileOnly 'org.apache.grails:grails-redis:5.0.0'
+    testImplementation 'org.apache.grails:grails-redis:5.0.0'
+    testImplementation "org.apache.grails:grails-testing-support-datamapping"
     testImplementation "org.mockito:mockito-core"
-    testImplementation "org.grails:grails-web-testing-support"
-    
-
+    testImplementation "org.apache.grails:grails-testing-support-web"
 }
 
 
-publishing {
-    publications {
-        maven(MavenPublication) {
-            artifactId 'distributed-lock'
-            pom.withXml {
-                asNode().children().last() + {
-                    resolveStrategy = Closure.DELEGATE_FIRST
-                    name 'Distributed Lock'
-                    description """This plugin provides a framework and interface for a synchronization mechanism distributed to multiple server instances.  In today's world of horizontal computational
-scale and massive concurrency, it becomes increasingly difficult to synchronize operations outside the context of a single computational space (server/process).  This plugin aims to make that
-easier by providing a simple service to facilitate this, as well as defining an interface for adding low level providers.
-"""
-                    url 'https://github.com/bertramdev/distributed-lock'
-                    scm {
-                        url 'https://github.com/bertramdev/distributed-lock'
-                        connection 'scm:https://bertramdev@github.com/bertramdev/distributed-lock.git'
-                        developerConnection 'scm:git://github.com/bertramdev/distributed-lock.git'
-                    }
-                    licenses {
-                        license {
-                            name 'The Apache Software License, Version 2.0'
-                            url 'http://www.apache.org/license/LICENSE-2.0.txt'
-                            distribution 'repo'
-                        }
-                    }
-                    developers {
-                        developer {
-                            id 'jsaardchit'
-                            name 'Jordon Saardchit'
-                            email 'jsaardchit@bcap.com'
-                        }
-                        developer {
-                            id 'davydotcom'
-                            name 'David Estes'
-                            email 'davydotcom@gmail.com'
-                        }
-                    }
-                }
-            }
-            from components.java
-        }
-    }
-    repositories {
-        maven {
-            if( !isReleaseVersion ) {
-                url = "http://nexus.bertramlabs.com/content/repositories/snapshots"
-                if(project.hasProperty('labsNexusUser')) {
-                    credentials {
-                        username = labsNexusUser
-                        password = labsNexusPassword
-                    }
-                }
-            }
-        }
-    }
+apply {
+    from rootProject.layout.projectDirectory.file('gradle/java-config.gradle')
+    from rootProject.layout.projectDirectory.file('gradle/publish-config.gradle')
 }
-
-// grailsPublish {
-  
-//   userOrg = 'bertramlabs'
-//     githubSlug = 'bertramdev/distributed-lock'
-//     license {
-//         name = 'Apache-2.0'
-//     }
-//     title = "Distributed Lock"
-//     desc = """This plugin provides a framework and interface for a synchronization mechanism distributed to multiple server instances.  In today's world of horizontal computational
-// scale and massive concurrency, it becomes increasingly difficult to synchronize operations outside the context of a single computational space (server/process).  This plugin aims to make that
-// easier by providing a simple service to facilitate this, as well as defining an interface for adding low level providers.
-// """
-//     developers = [jsaardchit: "Jordon Saardchit", davydotcom: "David Estes"]
-// }
-
-

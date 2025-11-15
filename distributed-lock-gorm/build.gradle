@@ -1,115 +1,50 @@
-buildscript {
-    repositories {
-        mavenLocal()
-        maven { url "https://repo.grails.org/grails/core" }
+apply plugin: 'groovy'
+apply plugin: 'java-library'
+apply plugin:"org.apache.grails.gradle.grails-plugin"
+group = 'cloud.wondrify'
+
+ext {
+    pomDescription = 'This Provides a GORM Module for the Grails Distributed Lock Plugin instead of using redis.'
+}
+
+configurations {
+    provided
+    doc.extendsFrom(runtime)
+}
+
+sourceSets {
+    main {
+        compileClasspath += configurations.provided
+        groovy.srcDirs += ['src/main/java']
+        java.srcDirs = []
     }
-    dependencies {
-        classpath "org.grails:grails-gradle-plugin:$grailsVersion"
-    }
 }
 
 
-group "com.bertramlabs.plugins"
-
-apply plugin:"eclipse"
-apply plugin:"idea"
-apply plugin:"org.grails.grails-plugin"
-apply plugin:"java-library"
-apply plugin:"maven-publish"
-
-ext.isReleaseVersion = !version.endsWith("SNAPSHOT")
-
-
-repositories {
-    mavenLocal()
-    maven { url "https://repo.grails.org/grails/core" }
-}
-
-java {
-    withSourcesJar()
-    withJavadocJar()
-}
 
 dependencies {
-    implementation "org.springframework.boot:spring-boot-starter-logging"
+    implementation 'org.springframework.boot:spring-boot-starter-logging'
+    implementation "org.springframework.boot:spring-boot-starter-actuator"
     implementation "org.springframework.boot:spring-boot-autoconfigure"
-    implementation "org.grails:grails-core"
     implementation "org.springframework.boot:spring-boot-starter-tomcat"
-    implementation "org.grails:grails-dependencies"
-
-    api project(':distributed-lock')
-
-    console "org.grails:grails-console"
-    profile "org.grails.profiles:web-plugin"
-    implementation "org.grails:grails-plugin-services"
-    implementation "org.grails:grails-plugin-domain-class"
-    api "org.grails.plugins:hibernate5"
-    api "org.hibernate:hibernate-core:5.6.15.Final"
-    // api "org.hibernate:hibernate-ehcache:5.4.10.Final"
+    implementation "org.apache.grails:grails-core"
+    implementation "org.apache.grails:grails-web-boot"
+    implementation platform("org.apache.grails:grails-bom:$grailsVersion")
+    implementation "org.apache.grails:grails-databinding"
+    implementation "org.apache.grails:grails-services"
     implementation "com.h2database:h2"
-    testImplementation "org.grails:grails-gorm-testing-support"
+    implementation "org.apache.grails:grails-async:7.0.0"
+    api project(':distributed-lock')
+    api "org.apache.grails:grails-domain-class"
+    api "org.apache.grails:grails-data-hibernate5"
+    testImplementation "org.apache.grails:grails-testing-support-datamapping"
     testImplementation "org.mockito:mockito-core"
-    testImplementation "org.grails:grails-web-testing-support"
+    testImplementation "org.apache.grails:grails-testing-support-web"
 }
 
-bootRun {
-    jvmArgs('-Dspring.output.ansi.enabled=always')
-}
-// enable if you wish to package this plugin as a standalone application
-bootJar.enabled = false
 
-
-publishing {
-    publications {
-        maven(MavenPublication) {
-            artifactId 'distributed-lock-gorm'
-            pom.withXml {
-                asNode().children().last() + {
-                    resolveStrategy = Closure.DELEGATE_FIRST
-                    name 'Distributed Lock GORM'
-                    description 'This Provides a GORM Module for the Grails Distributed Lock Plugin instead of using redis.'
-                    url 'https://github.com/bertramdev/distributed-lock'
-                    scm {
-                        url 'https://github.com/bertramdev/distributed-lock'
-                        connection 'scm:https://bertramdev@github.com/bertramdev/distributed-lock.git'
-                        developerConnection 'scm:git://github.com/bertramdev/distributed-lock.git'
-                    }
-                    licenses {
-                        license {
-                            name 'The Apache Software License, Version 2.0'
-                            url 'http://www.apache.org/license/LICENSE-2.0.txt'
-                            distribution 'repo'
-                        }
-                    }
-                    developers {
-                        developer {
-                            id 'jsaardchit'
-                            name 'Jordon Saardchit'
-                            email 'jsaardchit@bcap.com'
-                        }
-                        developer {
-                            id 'davydotcom'
-                            name 'David Estes'
-                            email 'davydotcom@gmail.com'
-                        }
-                    }
-                }
-            }
-            from components.java
-        }
-    }
-    repositories {
-        maven {
-            if( !isReleaseVersion ) {
-                url = "http://nexus.bertramlabs.com/content/repositories/snapshots"
-                if(project.hasProperty('labsNexusUser')) {
-                    credentials {
-                        username = labsNexusUser
-                        password = labsNexusPassword
-                    }
-                }
-            }
-        }
-    }
+apply {
+    from rootProject.layout.projectDirectory.file('gradle/java-config.gradle')
+    from rootProject.layout.projectDirectory.file('gradle/publish-config.gradle')
 }
 
