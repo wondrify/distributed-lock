@@ -6,6 +6,10 @@ easier by providing a simple service to facilitate this, as well as defining an 
 
 This plugin supports both utilizing the grails-redis plugin if it is available OR GORM by creating a hibernate `distributed_lock` table. GORM Locking over MySQL or other hibernate compatible database backing is very efficient and can often be used to reduce dependency overhead.
 
+## Documentation
+
+📚 **[Full Documentation](https://wondrify.github.io/distributed-lock/)** - Comprehensive guides and API reference
+
 
 Release Notes
 -------------

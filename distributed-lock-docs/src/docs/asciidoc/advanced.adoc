@@ -1,0 +1,788 @@
+= Advanced Usage
+:toc: left
+:toclevels: 3
+:source-highlighter: coderay
+:icons: font
+
+== Lock Patterns and Best Practices
+
+=== Always Use Try-Finally
+
+Always release locks in a `finally` block to prevent deadlocks:
+
+[source,groovy]
+----
+// GOOD
+def lock
+try {
+    lock = lockService.acquireLock('mylock')
+    // Do work
+} finally {
+    if (lock) {
+        lockService.releaseLock('mylock', [lock: lock])
+    }
+}
+
+// BAD - Don't do this
+def lock = lockService.acquireLock('mylock')
+// Do work
+lockService.releaseLock('mylock', [lock: lock])  // May never execute if exception occurs
+----
+
+=== Set Appropriate TTLs
+
+Always set a TTL to prevent orphaned locks from crashed processes:
+
+[source,groovy]
+----
+// GOOD - Lock will auto-expire
+def lock = lockService.acquireLock('mylock', [
+    ttl: 60000l  // 1 minute
+])
+
+// RISKY - Lock never expires, could cause deadlock if process crashes
+def lock = lockService.acquireLock('mylock')
+----
+
+=== Short Timeouts for Non-Critical Operations
+
+Use short timeouts when you can skip work if a lock isn't immediately available:
+
+[source,groovy]
+----
+class CacheRefreshService {
+    def lockService
+    
+    def refreshCache() {
+        def lock = lockService.acquireLock('cache-refresh', [
+            timeout: 100l,       // Only wait 100ms
+            ttl: 300000l,        // 5 minutes max
+            raiseError: false
+        ])
+        
+        if (!lock) {
+            log.debug("Cache refresh already in progress, skipping")
+            return
+        }
+        
+        try {
+            performCacheRefresh()
+        } finally {
+            lockService.releaseLock('cache-refresh', [lock: lock])
+        }
+    }
+}
+----
+
+=== Lock Granularity
+
+Choose the right level of lock granularity:
+
+[source,groovy]
+----
+class OrderService {
+    def lockService
+    
+    // TOO COARSE - Locks all orders
+    def updateOrderBad(Order order) {
+        def lock = lockService.acquireLock('all-orders')
+        try {
+            order.status = 'PROCESSING'
+            order.save()
+        } finally {
+            lockService.releaseLock('all-orders', [lock: lock])
+        }
+    }
+    
+    // GOOD - Locks specific order
+    def updateOrderGood(Order order) {
+        def lock = lockService.acquireLockByDomain(order)
+        try {
+            order.status = 'PROCESSING'
+            order.save()
+        } finally {
+            lockService.releaseLockByDomain(order, [lock: lock])
+        }
+    }
+    
+    // ALSO GOOD - Locks by order ID
+    def updateOrderById(Long orderId) {
+        def lock = lockService.acquireLock("order-${orderId}")
+        try {
+            def order = Order.get(orderId)
+            order.status = 'PROCESSING'
+            order.save()
+        } finally {
+            lockService.releaseLock("order-${orderId}", [lock: lock])
+        }
+    }
+}
+----
+
+== Handling Failures and Timeouts
+
+=== Error Handling Strategies
+
+==== Using Exceptions
+
+When `raiseError = true` (default), handle exceptions:
+
+[source,groovy]
+----
+class PaymentService {
+    def lockService
+    
+    def processPayment(Payment payment) {
+        try {
+            def lock = lockService.acquireLock("payment-${payment.id}", [
+                timeout: 5000l,
+                ttl: 30000l
+            ])
+            
+            try {
+                // Process payment
+                chargeCustomer(payment)
+                payment.status = 'COMPLETED'
+                payment.save()
+            } finally {
+                lockService.releaseLock("payment-${payment.id}", [lock: lock])
+            }
+            
+        } catch (com.bertram.lock.LockTimeoutException e) {
+            log.error("Could not acquire lock for payment ${payment.id}", e)
+            payment.status = 'FAILED'
+            payment.errorMessage = 'System busy, please try again'
+            payment.save()
+        }
+    }
+}
+----
+
+==== Using Boolean Returns
+
+When `raiseError = false`, check return values:
+
+[source,groovy]
+----
+class NotificationService {
+    def lockService
+    
+    def sendNotification(User user, String message) {
+        def lock = lockService.acquireLock("notify-${user.id}", [
+            timeout: 2000l,
+            ttl: 10000l,
+            raiseError: false
+        ])
+        
+        if (!lock) {
+            log.warn("Failed to acquire lock for user ${user.id}, notification skipped")
+            return false
+        }
+        
+        try {
+            emailService.send(user.email, message)
+            return true
+        } finally {
+            lockService.releaseLock("notify-${user.id}", [lock: lock])
+        }
+    }
+}
+----
+
+=== Retry Logic
+
+Implement custom retry logic for critical operations:
+
+[source,groovy]
+----
+class DocumentService {
+    def lockService
+    
+    def updateDocument(Document doc, int maxRetries = 3) {
+        int attempts = 0
+        
+        while (attempts < maxRetries) {
+            def lock = lockService.acquireLock("document-${doc.id}", [
+                timeout: 1000l,
+                ttl: 60000l,
+                raiseError: false
+            ])
+            
+            if (lock) {
+                try {
+                    // Update document
+                    doc.lastModified = new Date()
+                    doc.save(flush: true)
+                    return true
+                } finally {
+                    lockService.releaseLock("document-${doc.id}", [lock: lock])
+                }
+            }
+            
+            attempts++
+            if (attempts < maxRetries) {
+                log.debug("Lock acquisition failed, attempt ${attempts}/${maxRetries}")
+                Thread.sleep(500 * attempts)  // Exponential backoff
+            }
+        }
+        
+        throw new RuntimeException("Failed to acquire lock after ${maxRetries} attempts")
+    }
+}
+----
+
+== Multi-Lock Coordination
+
+When you need to lock multiple resources, always acquire locks in a consistent order to prevent deadlocks:
+
+[source,groovy]
+----
+class TransferService {
+    def lockService
+    
+    def transferFunds(Account from, Account to, BigDecimal amount) {
+        // IMPORTANT: Always lock in consistent order (e.g., by ID)
+        def accounts = [from, to].sort { it.id }
+        def locks = []
+        
+        try {
+            // Acquire locks in order
+            accounts.each { account ->
+                def lock = lockService.acquireLock("account-${account.id}", [
+                    timeout: 5000l,
+                    ttl: 30000l
+                ])
+                locks << [name: "account-${account.id}", key: lock]
+            }
+            
+            // Perform transfer
+            from.balance -= amount
+            to.balance += amount
+            from.save()
+            to.save()
+            
+        } finally {
+            // Release locks in reverse order
+            locks.reverse().each { lockInfo ->
+                lockService.releaseLock(lockInfo.name, [lock: lockInfo.key])
+            }
+        }
+    }
+}
+----
+
+== Lock Renewal for Long Operations
+
+For operations that exceed the initial TTL, renew the lock periodically:
+
+[source,groovy]
+----
+class BatchImportService {
+    def lockService
+    
+    def importLargeFile(File dataFile) {
+        def lock = lockService.acquireLock('batch-import', [
+            timeout: 5000l,
+            ttl: 60000l  // Initial 1 minute
+        ])
+        
+        if (!lock) {
+            throw new RuntimeException("Import already in progress")
+        }
+        
+        try {
+            def lines = dataFile.readLines()
+            def processed = 0
+            
+            lines.each { line ->
+                processLine(line)
+                processed++
+                
+                // Renew lock every 1000 records
+                if (processed % 1000 == 0) {
+                    lockService.renewLock('batch-import', [
+                        lock: lock,
+                        ttl: 60000l
+                    ])
+                    log.debug("Lock renewed at ${processed} records")
+                }
+            }
+            
+        } finally {
+            lockService.releaseLock('batch-import', [lock: lock])
+        }
+    }
+}
+----
+
+== Provider-Specific Considerations
+
+=== Redis Provider
+
+==== Connection Pooling
+
+The Redis provider uses the connection pool from grails-redis. Ensure your pool is sized appropriately:
+
+[source,groovy]
+----
+grails {
+    redis {
+        host = 'localhost'
+        port = 6379
+        poolConfig {
+            maxTotal = 50
+            maxIdle = 10
+            minIdle = 2
+        }
+    }
+}
+----
+
+==== Redis Cluster Support
+
+For Redis Cluster setups, configure multiple nodes:
+
+[source,groovy]
+----
+grails {
+    redis {
+        cluster {
+            nodes = ['redis1:6379', 'redis2:6379', 'redis3:6379']
+        }
+    }
+}
+----
+
+==== Sentinel Support
+
+For high availability with Redis Sentinel:
+
+[source,groovy]
+----
+grails {
+    redis {
+        sentinel {
+            master = 'mymaster'
+            nodes = ['sentinel1:26379', 'sentinel2:26379', 'sentinel3:26379']
+        }
+    }
+}
+----
+
+=== GORM Provider
+
+==== Database Table
+
+The GORM provider automatically creates a `distributed_lock` table:
+
+[source,sql]
+----
+CREATE TABLE distributed_lock (
+    id BIGINT PRIMARY KEY AUTO_INCREMENT,
+    lock_key VARCHAR(255) UNIQUE NOT NULL,
+    lock_value VARCHAR(255) NOT NULL,
+    created_at TIMESTAMP NOT NULL,
+    expires_at TIMESTAMP,
+    INDEX idx_lock_key (lock_key),
+    INDEX idx_expires_at (expires_at)
+);
+----
+
+==== Cleanup of Expired Locks
+
+Expired locks are automatically cleaned up, but you can manually trigger cleanup:
+
+[source,groovy]
+----
+class MaintenanceService {
+    def lockService
+    
+    def cleanupExpiredLocks() {
+        // The GORM provider automatically cleans up during lock operations
+        // But you can force cleanup by attempting to acquire a special lock
+        def lock = lockService.acquireLock('_cleanup_trigger', [
+            timeout: 100l,
+            raiseError: false
+        ])
+        if (lock) {
+            lockService.releaseLock('_cleanup_trigger', [lock: lock])
+        }
+    }
+}
+----
+
+==== Transaction Considerations
+
+The GORM provider participates in Hibernate transactions. Be careful when mixing locks with transactional operations:
+
+[source,groovy]
+----
+class OrderService {
+    def lockService
+    
+    @Transactional
+    def processOrder(Long orderId) {
+        // Lock is acquired before transaction starts
+        def lock = lockService.acquireLock("order-${orderId}")
+        
+        try {
+            def order = Order.get(orderId)
+            // Transaction operations here
+            order.status = 'PROCESSED'
+            order.save()
+            
+            // Lock should be released AFTER transaction commits
+        } finally {
+            lockService.releaseLock("order-${orderId}", [lock: lock])
+        }
+    }
+}
+----
+
+== Performance Considerations
+
+=== Lock Contention
+
+Monitor lock contention in your application:
+
+[source,groovy]
+----
+class LockMonitoringService {
+    def lockService
+    
+    def monitorLockContention(String lockName, Closure work) {
+        def startTime = System.currentTimeMillis()
+        def lock = lockService.acquireLock(lockName, [timeout: 5000l])
+        def waitTime = System.currentTimeMillis() - startTime
+        
+        if (waitTime > 1000) {
+            log.warn("High lock contention for '${lockName}': waited ${waitTime}ms")
+        }
+        
+        try {
+            work()
+        } finally {
+            if (lock) {
+                lockService.releaseLock(lockName, [lock: lock])
+            }
+        }
+    }
+}
+----
+
+=== Reducing Lock Duration
+
+Keep locked sections as short as possible:
+
+[source,groovy]
+----
+class ReportService {
+    def lockService
+    
+    // BAD - Lock held too long
+    def generateReportBad(Long reportId) {
+        def lock = lockService.acquireLock("report-${reportId}")
+        try {
+            def data = fetchDataFromDatabase()     // Slow
+            def processed = processData(data)      // Slow
+            def formatted = formatReport(processed) // Slow
+            return formatted
+        } finally {
+            lockService.releaseLock("report-${reportId}", [lock: lock])
+        }
+    }
+    
+    // GOOD - Lock only critical section
+    def generateReportGood(Long reportId) {
+        // Do expensive work without lock
+        def data = fetchDataFromDatabase()
+        def processed = processData(data)
+        
+        // Only lock when updating shared state
+        def lock = lockService.acquireLock("report-${reportId}")
+        try {
+            def report = Report.get(reportId)
+            report.data = processed
+            report.status = 'COMPLETED'
+            report.save()
+        } finally {
+            lockService.releaseLock("report-${reportId}", [lock: lock])
+        }
+    }
+}
+----
+
+=== Lock Overhead
+
+Understand the performance characteristics of each provider:
+
+* *Redis*: ~1-5ms per lock operation (network latency dependent)
+* *GORM*: ~5-20ms per lock operation (database latency dependent)
+
+For high-throughput applications, consider:
+
+* Using Redis for better performance
+* Batching operations to reduce lock acquisitions
+* Using optimistic locking where appropriate
+
+== Testing with Distributed Locks
+
+=== Integration Tests
+
+[source,groovy]
+----
+import grails.testing.mixin.integration.Integration
+import spock.lang.Specification
+
+@Integration
+class LockServiceIntegrationSpec extends Specification {
+    
+    def lockService
+    
+    def "test basic lock acquisition and release"() {
+        when:
+        def lock = lockService.acquireLock('test-lock')
+        
+        then:
+        lock != null
+        
+        when:
+        def secondLock = lockService.acquireLock('test-lock', [
+            timeout: 100l,
+            raiseError: false
+        ])
+        
+        then:
+        secondLock == null  // Should fail to acquire
+        
+        when:
+        lockService.releaseLock('test-lock', [lock: lock])
+        def thirdLock = lockService.acquireLock('test-lock')
+        
+        then:
+        thirdLock != null  // Should succeed after release
+        
+        cleanup:
+        if (thirdLock) {
+            lockService.releaseLock('test-lock', [lock: thirdLock])
+        }
+    }
+    
+    def "test lock expiration"() {
+        when:
+        def lock = lockService.acquireLock('expiring-lock', [ttl: 1000l])
+        
+        then:
+        lock != null
+        
+        when:
+        Thread.sleep(1500)  // Wait for lock to expire
+        def newLock = lockService.acquireLock('expiring-lock')
+        
+        then:
+        newLock != null  // Should be able to acquire expired lock
+        
+        cleanup:
+        if (newLock) {
+            lockService.releaseLock('expiring-lock', [lock: newLock])
+        }
+    }
+}
+----
+
+=== Concurrent Testing
+
+[source,groovy]
+----
+import java.util.concurrent.*
+
+class ConcurrentLockSpec extends Specification {
+    
+    def lockService
+    
+    def "test concurrent lock access"() {
+        given:
+        def executor = Executors.newFixedThreadPool(10)
+        def counter = new AtomicInteger(0)
+        def errors = new ConcurrentLinkedQueue()
+        
+        when:
+        (1..10).each { i ->
+            executor.submit {
+                def lock
+                try {
+                    lock = lockService.acquireLock('concurrent-test', [
+                        timeout: 5000l
+                    ])
+                    
+                    // Critical section - increment counter
+                    def current = counter.get()
+                    Thread.sleep(10)  // Simulate work
+                    counter.set(current + 1)
+                    
+                } catch (Exception e) {
+                    errors.add(e)
+                } finally {
+                    if (lock) {
+                        lockService.releaseLock('concurrent-test', [lock: lock])
+                    }
+                }
+            }
+        }
+        
+        executor.shutdown()
+        executor.awaitTermination(1, TimeUnit.MINUTES)
+        
+        then:
+        errors.isEmpty()
+        counter.get() == 10  // All threads successfully incremented
+    }
+}
+----
+
+== Troubleshooting
+
+=== Common Issues
+
+==== Deadlocks
+
+*Symptom*: Application hangs, locks never released
+
+*Solutions*:
+- Always use try-finally blocks
+- Set appropriate TTLs
+- Check for lock acquisition order issues
+- Review application logs for lock timeout errors
+
+==== Lock Starvation
+
+*Symptom*: Some operations never acquire locks
+
+*Solutions*:
+- Reduce lock duration
+- Increase timeout values
+- Use fair locking strategies
+- Consider queue-based processing
+
+==== Memory Leaks
+
+*Symptom*: Redis or database grows unbounded
+
+*Solutions*:
+- Ensure all locks have TTLs
+- Verify locks are being released
+- Monitor active lock count
+- Check for orphaned locks
+
+=== Debugging
+
+Enable debug logging for lock operations:
+
+[source,yaml]
+----
+logging:
+  level:
+    com.bertram.lock: DEBUG
+----
+
+Or in `logback.groovy`:
+
+[source,groovy]
+----
+logger('com.bertram.lock', DEBUG)
+----
+
+=== Monitoring
+
+Monitor lock metrics:
+
+[source,groovy]
+----
+class LockMetricsService {
+    def lockService
+    
+    def getLockStatistics() {
+        def activeLocks = lockService.getLocks()
+        return [
+            totalActiveLocks: activeLocks.size(),
+            lockNames: activeLocks.toList()
+        ]
+    }
+    
+    def reportLockUsage() {
+        def stats = getLockStatistics()
+        log.info("Lock Statistics: ${stats.totalActiveLocks} active locks")
+        stats.lockNames.each { lockName ->
+            log.debug("  - ${lockName}")
+        }
+    }
+}
+----
+
+== Extending the Plugin
+
+=== Custom Lock Provider
+
+To create a custom lock provider, extend the `LockProvider` abstract class:
+
+[source,groovy]
+----
+package com.mycompany.lock
+
+import com.bertram.lock.LockProvider
+
+class CustomLockProvider extends LockProvider {
+    
+    @Override
+    String acquireLock(String lockName, Map options) {
+        // Implement lock acquisition logic
+        // Return unique lock key on success, null on failure
+        String lockKey = UUID.randomUUID().toString()
+        // Store lock with lockName and lockKey
+        return lockKey
+    }
+    
+    @Override
+    boolean releaseLock(String lockName, Map options) {
+        // Implement lock release logic
+        // options.lock contains the lock key from acquireLock
+        return true
+    }
+    
+    @Override
+    boolean renewLock(String lockName, Map options) {
+        // Implement lock renewal logic
+        return true
+    }
+    
+    @Override
+    Set<String> getLocks() {
+        // Return set of active lock names
+        return [] as Set
+    }
+}
+----
+
+Then configure it:
+
+[source,groovy]
+----
+distributedLock {
+    provider {
+        type = com.mycompany.lock.CustomLockProvider
+    }
+}
+----
+
+== Best Practices Summary
+
+1. *Always use try-finally* to ensure locks are released
+2. *Set appropriate TTLs* to prevent deadlocks from crashed processes
+3. *Use short timeouts* for non-critical operations
+4. *Lock at appropriate granularity* - not too coarse, not too fine
+5. *Acquire multiple locks in consistent order* to prevent deadlocks
+6. *Keep locked sections short* to reduce contention
+7. *Handle failures gracefully* with retries or alternative paths
+8. *Monitor lock usage* to identify bottlenecks
+9. *Test concurrent scenarios* thoroughly
+10. *Document lock dependencies* in your code

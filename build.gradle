@@ -19,7 +19,9 @@ ext {
 }
 
 subprojects { project ->
+    if (project.name != 'distributed-lock-docs') {
         publishedProjects << project.name
         apply plugin: 'java'
         apply plugin: 'org.apache.grails.gradle.grails-publish'
+    }
 }

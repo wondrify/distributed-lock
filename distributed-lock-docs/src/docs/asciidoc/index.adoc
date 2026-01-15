@@ -1,0 +1,434 @@
+= Distributed Lock Documentation
+:toc: left
+:toclevels: 3
+:source-highlighter: coderay
+:icons: font
+
+== Introduction
+
+The Distributed Lock plugin provides a framework and interface for a synchronization mechanism that can be distributed outside the context of the app container. In today's world of horizontal computational scale and massive concurrency, it becomes increasingly difficult to synchronize operations outside the context of a single computational space (server/process/container).
+
+=== Key Features
+
+* *Distributed Synchronization*: Coordinate operations across multiple servers or processes
+* *Multiple Providers*: Support for Redis and GORM-based locking
+* *Flexible Configuration*: Configure timeouts, TTLs, and namespaces
+* *Domain-based Locking*: Convenient methods to lock based on GORM domain instances
+* *Automatic Expiration*: Lock TTLs prevent deadlocks from crashed processes
+* *Thread-safe*: Safe for use in concurrent environments
+
+=== Supported Providers
+
+* *Redis* - High-performance distributed locking via Redis
+* *GORM* - Database-backed locking using Hibernate (MySQL, PostgreSQL, etc.)
+
+== Installation
+
+=== Grails 7
+
+Add the plugin to your `build.gradle`:
+
+[source,groovy]
+----
+dependencies {
+    implementation 'cloud.wondrify:distributed-lock:7.0.0'
+    
+    // Choose your provider:
+    // For GORM-based locking:
+    implementation 'cloud.wondrify:distributed-lock-gorm:7.0.0'
+    
+    // For Redis-based locking (requires grails-redis):
+    implementation 'org.grails.plugins:grails-redis:3.0.0'
+}
+----
+
+=== Grails 6.x and Earlier
+
+For Grails 6.x and earlier versions, use the previous artifact coordinates:
+
+[source,groovy]
+----
+dependencies {
+    implementation 'com.bertramlabs.plugins:distributed-lock:6.x.x'
+}
+----
+
+== Configuration
+
+=== Redis Provider
+
+First, configure your Redis connection in `application.yml`:
+
+[source,yaml]
+----
+grails:
+  redis:
+    host: localhost
+    port: 6379
+----
+
+Or in `application.groovy`:
+
+[source,groovy]
+----
+grails {
+    redis {
+        host = 'localhost'
+        port = 6379
+    }
+}
+----
+
+Then configure the distributed lock options:
+
+==== YAML Configuration (application.yml)
+
+[source,yaml]
+----
+distributedLock:
+  provider:
+    type: RedisLockProvider
+    # connection: 'otherThanDefault'  # Optional: for multi-connection setups
+  raiseError: true
+  defaultTimeout: 10000  # 10 seconds
+  defaultTTL: 3600000    # 1 hour
+  namespace: 'my-app'
+----
+
+==== Groovy Configuration (application.groovy)
+
+[source,groovy]
+----
+distributedLock {
+    provider {
+        type = RedisLockProvider
+        // connection = 'otherThanDefault'  // Optional
+    }
+    raiseError = true
+    defaultTimeout = 10000l    // 10 seconds
+    defaultTTL = 3600000l      // 1 hour
+    namespace = 'my-app'
+}
+----
+
+=== GORM Provider
+
+For GORM-based locking, configure as follows:
+
+==== YAML Configuration (application.yml)
+
+[source,yaml]
+----
+distributedLock:
+  provider:
+    type: GormLockProvider
+  raiseError: true
+  defaultTimeout: 10000
+  defaultTTL: 3600000
+  namespace: 'my-app'
+----
+
+==== Groovy Configuration (application.groovy)
+
+[source,groovy]
+----
+distributedLock {
+    provider {
+        type = GormLockProvider
+    }
+    raiseError = true
+    defaultTimeout = 10000l
+    defaultTTL = 3600000l
+    namespace = 'my-app'
+}
+----
+
+The GORM provider automatically creates a `distributed_lock` table in your database. This approach is very efficient and can reduce dependency overhead for MySQL, PostgreSQL, and other Hibernate-compatible databases.
+
+=== Configuration Options
+
+* *provider.type*: The implementation class of the lock provider (`RedisLockProvider` or `GormLockProvider`)
+* *provider.connection*: (Redis only) Specify a specific Redis connection for multi-connection setups
+* *raiseError*: Whether to throw exceptions on failures (default: `true`) or return boolean status
+* *namespace*: A namespace prefix for lock keys (default: `'distributed-lock'`)
+* *defaultTimeout*: Default time in milliseconds to wait for lock acquisition (default: `30000`)
+* *defaultTTL*: Time-to-live in milliseconds for active locks (default: `0` - never expires)
+
+== Quick Start
+
+Here's a simple example to get you started:
+
+[source,groovy]
+----
+class MyService {
+    def lockService
+    
+    def someMethod() {
+        def lockKey
+        try {
+            lockKey = lockService.acquireLock('/lock/critical-section')
+            // Perform synchronized operation here
+            println "Lock acquired, performing critical work..."
+        } finally {
+            if (lockKey) {
+                lockService.releaseLock('/lock/critical-section', [lock: lockKey])
+            }
+        }
+    }
+}
+----
+
+== Usage
+
+The plugin provides a single non-transactional service (`lockService`) that handles all lock negotiation. You can inject it into any of your services or controllers.
+
+=== Basic Lock Operations
+
+==== Acquiring a Lock
+
+[source,groovy]
+----
+def lockKey = lockService.acquireLock('mylock')
+
+if (lockKey) {
+    // Lock acquired successfully
+    // Perform synchronized operation
+} else {
+    println "Unable to obtain lock"
+}
+----
+
+==== Releasing a Lock
+
+[source,groovy]
+----
+try {
+    def lock = lockService.acquireLock('mylock')
+    if (lock) {
+        // DO SYNCHRONIZED WORK
+    }
+} finally {
+    lockService.releaseLock('mylock', [lock: lock])
+}
+----
+
+==== Lock with Timeout and TTL
+
+[source,groovy]
+----
+def lock = lockService.acquireLock('mylock', [
+    timeout: 2000l,     // Wait up to 2 seconds
+    ttl: 10000l,        // Lock expires after 10 seconds
+    raiseError: false   // Return false instead of throwing exception
+])
+----
+
+=== Domain-based Locking
+
+For convenience, you can lock based on GORM domain instances:
+
+[source,groovy]
+----
+class BookService {
+    def lockService
+    
+    def updateBook(Long bookId) {
+        def book = Book.get(bookId)
+        def lockKey
+        
+        try {
+            lockKey = lockService.acquireLockByDomain(book)
+            
+            // Update book safely
+            book.lastModified = new Date()
+            book.save()
+            
+        } finally {
+            if (lockKey) {
+                lockService.releaseLockByDomain(book, [lock: lockKey])
+            }
+        }
+    }
+}
+----
+
+=== Renewing a Lock
+
+You can extend the lease on an active lock:
+
+[source,groovy]
+----
+def lock = lockService.acquireLock('longRunningTask', [ttl: 30000l])
+
+try {
+    // Do some work
+    processPartOne()
+    
+    // Renew the lock for another 30 seconds
+    lockService.renewLock('longRunningTask', [lock: lock, ttl: 30000l])
+    
+    // Continue work
+    processPartTwo()
+    
+} finally {
+    lockService.releaseLock('longRunningTask', [lock: lock])
+}
+----
+
+=== Querying Active Locks
+
+Get all currently active locks in the system:
+
+[source,groovy]
+----
+Set<String> activeLocks = lockService.getLocks()
+activeLocks.each { lockName ->
+    println "Active lock: ${lockName}"
+}
+----
+
+== LockService API
+
+=== Methods
+
+* `acquireLock(String lockName, Map options = null)` - Acquire a lock with the given name
+* `acquireLockByDomain(Object domainInstance, Map options = null)` - Acquire a lock for a domain instance
+* `releaseLock(String lockName, Map options = null)` - Release a named lock
+* `releaseLockByDomain(Object domainInstance, Map options = null)` - Release a domain-based lock
+* `renewLock(String lockName, Map options = null)` - Renew an expiring lock
+* `renewLockByDomain(Object domainInstance, Map options = null)` - Renew a domain-based lock
+* `getLocks()` - Returns `Set<String>` of currently active lock names
+
+=== Options
+
+All methods accept an optional `Map` parameter with the following options:
+
+* *timeout*: Time in milliseconds to wait for the operation to complete (overrides `defaultTimeout`)
+* *ttl*: Time in milliseconds for the lock to auto-expire (overrides `defaultTTL`)
+* *raiseError*: Boolean to throw exceptions on failure or return boolean status (overrides `raiseError`)
+* *lock*: The lock key returned from `acquireLock()` (required for `releaseLock()` and `renewLock()`)
+
+== Examples
+
+=== Simple Synchronization
+
+[source,groovy]
+----
+class ReportService {
+    def lockService
+    
+    def generateMonthlyReport() {
+        def lock = lockService.acquireLock('monthly-report', [timeout: 5000l])
+        
+        if (!lock) {
+            throw new RuntimeException("Report generation already in progress")
+        }
+        
+        try {
+            // Generate report - only one process will do this at a time
+            def report = createReport()
+            saveReport(report)
+        } finally {
+            lockService.releaseLock('monthly-report', [lock: lock])
+        }
+    }
+}
+----
+
+=== Concurrent Access Control
+
+Using the executor plugin or parallel processing:
+
+[source,groovy]
+----
+import java.util.concurrent.*
+
+class BatchProcessingService {
+    def lockService
+    
+    def processItems(List items) {
+        ExecutorService executor = Executors.newFixedThreadPool(10)
+        
+        items.each { item ->
+            executor.submit {
+                def lock = null
+                try {
+                    lock = lockService.acquireLock("item-${item.id}", [
+                        timeout: 5000l,
+                        ttl: 60000l
+                    ])
+                    
+                    if (lock) {
+                        processItem(item)
+                    } else {
+                        log.warn("Could not acquire lock for item ${item.id}")
+                    }
+                } finally {
+                    if (lock) {
+                        lockService.releaseLock("item-${item.id}", [lock: lock])
+                    }
+                }
+            }
+        }
+        
+        executor.shutdown()
+        executor.awaitTermination(1, TimeUnit.HOURS)
+    }
+}
+----
+
+=== Scheduled Task Coordination
+
+Ensure only one instance runs a scheduled job:
+
+[source,groovy]
+----
+class DataSyncJob {
+    def lockService
+    
+    static triggers = {
+        cron name: 'dataSyncTrigger', cronExpression: '0 0 * * * ?'  // Every hour
+    }
+    
+    def execute() {
+        def lock = lockService.acquireLock('data-sync-job', [
+            timeout: 1000l,      // Fail fast if another instance is running
+            ttl: 3600000l,       // Lock expires after 1 hour
+            raiseError: false
+        ])
+        
+        if (!lock) {
+            log.info("Data sync already running on another instance")
+            return
+        }
+        
+        try {
+            syncDataFromExternalSource()
+        } finally {
+            lockService.releaseLock('data-sync-job', [lock: lock])
+        }
+    }
+}
+----
+
+== Advanced Usage
+
+For detailed information on advanced features and patterns, see link:advanced.html[Advanced Usage].
+
+Topics covered in the advanced guide:
+
+* Custom Lock Providers
+* Lock Patterns and Best Practices
+* Handling Failures and Timeouts
+* Performance Considerations
+* Testing with Distributed Locks
+* Troubleshooting
+
+== Getting Help
+
+* GitHub Issues: https://github.com/wondrify/distributed-lock
+* Source Code: https://github.com/wondrify/distributed-lock
+
+== License
+
+Distributed Lock is open source software licensed under the Apache License 2.0.

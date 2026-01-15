@@ -1,1 +1,1 @@
-include 'distributed-lock', 'distributed-lock-gorm'
+include 'distributed-lock', 'distributed-lock-gorm', 'distributed-lock-docs'
