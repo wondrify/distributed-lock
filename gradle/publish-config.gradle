@@ -19,11 +19,11 @@ import org.apache.grails.gradle.publish.GrailsPublishExtension
 extensions.configure(GrailsPublishExtension) {
 	// Explicit `it` is required here
 	it.artifactId = findProperty('pomArtifactId') ?: project.name
-	it.githubSlug = 'wondrify/seed-me'
+	it.githubSlug = 'wondrify/distributed-lock'
 	it.license.name = 'Apache-2.0'
 	it.title = findProperty('pomTitle') ?: project.name
-	it.desc = findProperty('pomDescription') ?: "Implements a standard convention for adding seed data to your Grails application."
+	it.desc = findProperty('pomDescription') ?: "Grails plugin providing a distributed locking framework and interface."
 	it.developers = findProperty('pomDevelopers') as Map<String, String> ?: [davydotcom: 'David Estes']
 	it.publicationName = findProperty('pomMavenPublicationName') ?: 'maven'
-	it.addComponents = project.name != 'seed-me-gradle'
+	it.addComponents = true
 }
